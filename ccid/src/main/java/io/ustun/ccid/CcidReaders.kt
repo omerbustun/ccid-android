@@ -164,6 +164,7 @@ class CcidReaders(private val context: Context) {
             bulkOut = found.bulkOut,
             exchangeLevel = found.level,
             features = found.features,
+            mechanicalFunctions = found.mechanical,
             maxMessageLength = found.maxMessageLength,
             interruptIn = found.interruptIn,
             slotCount = found.slotCount,

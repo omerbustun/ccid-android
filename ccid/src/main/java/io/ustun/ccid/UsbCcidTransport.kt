@@ -27,6 +27,8 @@ class UsbCcidTransport internal constructor(
     private val bulkOut: UsbEndpoint,
     private val exchangeLevel: Ccid.ExchangeLevel,
     private val features: Int,
+    /** CCID Table 5.1-1: `dwMechanical`, the motorised functions this reader has. */
+    private val mechanicalFunctions: Int,
     private val maxMessageLength: Int,
     private val interruptIn: UsbEndpoint?,
     /** CCID Table 5.1-1: `bMaxSlotIndex`, so slot count is one more than this. */
@@ -666,6 +668,137 @@ class UsbCcidTransport internal constructor(
         lock.withLock { exchange(Ccid.message(Ccid.PC_TO_RDR_ABORT, slot, nextSeq())) }
     }
 
+    /**
+     * Stop or restart the card's clock (CCID §6.1.9).
+     *
+     * A stopped clock holds the card's state while drawing almost no power.
+     * `bClockCommand` 01h stops it in the state `bClockStop` selected through
+     * [setParameters]; 00h restarts it.
+     *
+     * @throws CcidException if the reader does not declare clock stop mode.
+     */
+    fun clockStopped(stopped: Boolean) = lock.withLock {
+        if (features and Ccid.Feature.CLOCK_STOP == 0) {
+            throw failed(
+                "This reader cannot stop the card clock",
+                CcidException.Reason.UNSUPPORTED_READER,
+            )
+        }
+        val command = if (stopped) Ccid.Clock.STOP else Ccid.Clock.RESTART
+        val response = exchange(
+            Ccid.message(Ccid.PC_TO_RDR_ICC_CLOCK, slot, nextSeq(), p0 = command)
+        )
+        if (response.failed) throw failed(Ccid.errorText(response.error))
+    }
+
+    /**
+     * Choose the class byte the reader puts on the GET RESPONSE and ENVELOPE
+     * commands it issues on the host's behalf under T=0 (CCID §6.1.10).
+     *
+     * A null argument leaves that command at the reader's default. Passing
+     * [Ccid.T0Apdu.ECHO_CLASS] makes the reader echo the class byte of the
+     * APDU it is carrying.
+     *
+     * §6.1.10 confines this to readers at APDU level, since only they issue
+     * those commands; at TPDU level [T0] does that work here instead. The
+     * setting is slot-specific and lapses when the slot loses power.
+     *
+     * @throws CcidException if the reader exchanges at TPDU level.
+     */
+    fun setT0ApduClasses(getResponse: Int? = null, envelope: Int? = null) = lock.withLock {
+        if (exchangeLevel != Ccid.ExchangeLevel.SHORT_APDU &&
+            exchangeLevel != Ccid.ExchangeLevel.EXTENDED_APDU
+        ) {
+            throw failed(
+                "Only an APDU-level reader issues GET RESPONSE itself",
+                CcidException.Reason.UNSUPPORTED_READER,
+            )
+        }
+        var changes = 0
+        if (getResponse != null) changes = changes or Ccid.T0Apdu.GET_RESPONSE_CLASS
+        if (envelope != null) changes = changes or Ccid.T0Apdu.ENVELOPE_CLASS
+        val response = exchange(
+            Ccid.message(
+                Ccid.PC_TO_RDR_T0_APDU, slot, nextSeq(),
+                p0 = changes, p1 = getResponse ?: 0, p2 = envelope ?: 0,
+            )
+        )
+        if (response.failed) throw failed(Ccid.errorText(response.error))
+    }
+
+    /**
+     * Drive a motorised reader (CCID §6.1.12).
+     *
+     * Refused unless the reader's `dwMechanical` declares the function asked
+     * for. §6.1.12 leaves accept, eject and capture outside the revision it
+     * defines, so a reader may decline them even while declaring them.
+     *
+     * @throws CcidException if the reader has no such mechanism.
+     */
+    fun mechanical(function: MechanicalFunction) = lock.withLock {
+        if (mechanicalFunctions and function.capability == 0) {
+            throw failed(
+                "This reader has no ${function.name.lowercase()} mechanism",
+                CcidException.Reason.UNSUPPORTED_READER,
+            )
+        }
+        val response = exchange(
+            Ccid.message(Ccid.PC_TO_RDR_MECHANICAL, slot, nextSeq(), p0 = function.code)
+        )
+        if (response.failed) throw failed(Ccid.errorText(response.error))
+    }
+
+    /**
+     * Set the clock frequency and data rate of this slot (CCID §6.1.14).
+     *
+     * Returns what the reader settled on, which need not be what was asked
+     * for: §6.1.14 has a reader running its own automatic selection report the
+     * active values and discard the forced ones.
+     */
+    fun setDataRateAndClockFrequency(clockKHz: Int, dataRateBps: Int): ClockAndDataRate =
+        lock.withLock {
+            val payload = ByteArray(8)
+            le32(payload, 0, clockKHz)
+            le32(payload, 4, dataRateBps)
+            val response = exchange(
+                Ccid.message(
+                    Ccid.PC_TO_RDR_SET_DATA_RATE_AND_CLOCK, slot, nextSeq(), data = payload,
+                )
+            )
+            if (response.failed) throw failed(Ccid.errorText(response.error))
+            if (response.data.size < 8) {
+                throw failed("Reader returned a short clock and data rate")
+            }
+            // §6.2.5: dwClockFrequency at offset 10 and dwDataRate at 14, which
+            // are the first and second words of the message-specific data.
+            ClockAndDataRate(readLe32(response.data, 0), readLe32(response.data, 4))
+        }
+
+    /** The motorised functions CCID §6.1.12 defines, with their `dwMechanical` bit. */
+    enum class MechanicalFunction(val code: Int, internal val capability: Int) {
+        ACCEPT(0x01, Ccid.Mechanical.ACCEPT),
+        EJECT(0x02, Ccid.Mechanical.EJECT),
+        CAPTURE(0x03, Ccid.Mechanical.CAPTURE),
+        LOCK(0x04, Ccid.Mechanical.LOCK_UNLOCK),
+        UNLOCK(0x05, Ccid.Mechanical.LOCK_UNLOCK),
+    }
+
+    /** A slot's clock frequency in kHz and data rate in bits per second. */
+    data class ClockAndDataRate(val clockKHz: Int, val dataRateBps: Int)
+
+    private fun le32(into: ByteArray, at: Int, value: Int) {
+        into[at] = (value and 0xFF).toByte()
+        into[at + 1] = (value ushr 8 and 0xFF).toByte()
+        into[at + 2] = (value ushr 16 and 0xFF).toByte()
+        into[at + 3] = (value ushr 24 and 0xFF).toByte()
+    }
+
+    private fun readLe32(from: ByteArray, at: Int): Int =
+        (from[at].toInt() and 0xFF) or
+            ((from[at + 1].toInt() and 0xFF) shl 8) or
+            ((from[at + 2].toInt() and 0xFF) shl 16) or
+            ((from[at + 3].toInt() and 0xFF) shl 24)
+
     /** CCID §6.1.5. The protocol parameters currently in force. */
     fun getParameters(): Parameters = lock.withLock {
         val response = exchange(Ccid.message(Ccid.PC_TO_RDR_GET_PARAMETERS, slot, nextSeq()))
@@ -854,6 +987,7 @@ internal object CcidInterface {
         val interruptIn: UsbEndpoint?,
         val level: Ccid.ExchangeLevel,
         val features: Int,
+        val mechanical: Int,
         val maxMessageLength: Int,
         val slotCount: Int,
     )
@@ -882,7 +1016,8 @@ internal object CcidInterface {
             val caps = capabilities(connection, iface.id)
             return Found(
                 iface, bulkIn, bulkOut, interruptIn,
-                caps.level, caps.features, caps.maxMessageLength, caps.slotCount,
+                caps.level, caps.features, caps.mechanical,
+                caps.maxMessageLength, caps.slotCount,
             )
         }
         return null
@@ -891,6 +1026,7 @@ internal object CcidInterface {
     private data class Capabilities(
         val level: Ccid.ExchangeLevel,
         val features: Int,
+        val mechanical: Int,
         val maxMessageLength: Int,
         val slotCount: Int,
     )
@@ -903,10 +1039,10 @@ internal object CcidInterface {
      * USB 2.0 Table 9-5: INTERFACE is descriptor type 4. Table 9-12: bLength at
      * offset 0, bDescriptorType at 1, bInterfaceNumber at 2. CCID Table 5.1-1:
      * the class descriptor is type 21h, dwFeatures at offset 40 and
-     * dwMaxCCIDMessageLength at 44, both little-endian.
+     * dwMechanical at 36, dwMaxCCIDMessageLength at 44, all little-endian.
      */
     private fun capabilities(connection: UsbDeviceConnection, interfaceId: Int): Capabilities {
-        val fallback = Capabilities(Ccid.ExchangeLevel.SHORT_APDU, 0, 0, 1)
+        val fallback = Capabilities(Ccid.ExchangeLevel.SHORT_APDU, 0, 0, 0, 1)
         val raw = connection.rawDescriptors ?: return fallback
         var i = 0
         var inTarget = false
@@ -920,6 +1056,8 @@ internal object CcidInterface {
             }
 
             if (type == 0x21 && inTarget && length >= 44 && i + 43 < raw.size) {
+                // Table 5.1-1: dwMechanical at offset 36, dwFeatures at 40.
+                val mechanical = le32(raw, i + 36)
                 val features = le32(raw, i + 40)
                 val maxLen = if (length >= 48 && i + 47 < raw.size) le32(raw, i + 44) else 0
                 // Table 5.1-1: bMaxSlotIndex at offset 4; slots are one more.
@@ -930,7 +1068,7 @@ internal object CcidInterface {
                         "level=${Ccid.ExchangeLevel.fromFeatures(features)} maxMessage=$maxLen slots=$slots",
                 )
                 return Capabilities(
-                    Ccid.ExchangeLevel.fromFeatures(features), features, maxLen, slots,
+                    Ccid.ExchangeLevel.fromFeatures(features), features, mechanical, maxLen, slots,
                 )
             }
             i += length
