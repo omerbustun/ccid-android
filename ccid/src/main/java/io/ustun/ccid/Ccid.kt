@@ -37,8 +37,31 @@ internal object Ccid {
     const val RDR_TO_PC_ESCAPE = 0x83
     const val RDR_TO_PC_DATA_RATE_AND_CLOCK = 0x84
 
-    /** CCID Table 6.3-1, on the interrupt endpoint. */
+    // Interrupt endpoint, Table 6.3-1.
     const val RDR_TO_PC_NOTIFY_SLOT_CHANGE = 0x50
+    const val RDR_TO_PC_HARDWARE_ERROR = 0x51
+
+    /**
+     * The three class-specific requests on the control pipe, Table 5.3-1.
+     *
+     * These are not bulk messages. §4.1 pairs [ABORT] with the bulk
+     * `PC_to_RDR_Abort`, and the two `GET_` requests are the only way to learn
+     * which clock frequencies and data rates a reader will accept.
+     */
+    object ControlRequest {
+        const val ABORT = 0x01
+        const val GET_CLOCK_FREQUENCIES = 0x02
+        const val GET_DATA_RATES = 0x03
+
+        /** Table 5.3-1, `00100001B`: host to device, class request, interface recipient. */
+        const val TYPE_OUT = 0x21
+
+        /** Table 5.3-1, `10100001B`: device to host, class request, interface recipient. */
+        const val TYPE_IN = 0xA1
+
+        /** §5.3.1: `wValue` carries bSlot in the low byte and bSeq in the high. */
+        fun abortValue(slot: Int, seq: Int): Int = ((seq and 0xFF) shl 8) or (slot and 0xFF)
+    }
 
     /** `dwFeatures` bits, Table 5.1-1. */
     object Feature {
@@ -128,6 +151,7 @@ internal object Ccid {
         -> RDR_TO_PC_PARAMETERS
 
         PC_TO_RDR_ESCAPE -> RDR_TO_PC_ESCAPE
+        PC_TO_RDR_SET_DATA_RATE_AND_CLOCK -> RDR_TO_PC_DATA_RATE_AND_CLOCK
         else -> RDR_TO_PC_SLOT_STATUS
     }
 
