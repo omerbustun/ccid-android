@@ -221,5 +221,26 @@ class T1Test {
         }
     }
 
+    /**
+     * §11.6.3.2 Rule 7 branches on what was last transmitted, and treats an
+     * S(... request) and an S(... response) differently: a request is
+     * retransmitted, a response is answered with an R-block. Collapsing the two
+     * sends a WTX response again where the card is waiting for an R-block.
+     */
+    @Test
+    fun `rule 7 tells the four kinds of block apart`() {
+        assertEquals(T1.Kind.I_BLOCK, T1.kindOf(pcb(T1.iBlock(0, false, ByteArray(0)))))
+        assertEquals(T1.Kind.I_BLOCK, T1.kindOf(pcb(T1.iBlock(1, true, ByteArray(0)))))
+        assertEquals(T1.Kind.R_BLOCK, T1.kindOf(pcb(T1.rBlock(0))))
+        assertEquals(T1.Kind.R_BLOCK, T1.kindOf(pcb(T1.rBlockError(1, edcError = true))))
+
+        for (request in listOf(T1.S_RESYNCH_REQUEST, T1.S_IFS_REQUEST, T1.S_ABORT_REQUEST, T1.S_WTX_REQUEST)) {
+            assertEquals("0x%02X is a request".format(request), T1.Kind.S_REQUEST, T1.kindOf(request))
+        }
+        for (response in listOf(T1.S_RESYNCH_RESPONSE, T1.S_IFS_RESPONSE, T1.S_ABORT_RESPONSE, T1.S_WTX_RESPONSE)) {
+            assertEquals("0x%02X is a response".format(response), T1.Kind.S_RESPONSE, T1.kindOf(response))
+        }
+    }
+
     private fun pcb(block: ByteArray) = block[1].toInt() and 0xFF
 }

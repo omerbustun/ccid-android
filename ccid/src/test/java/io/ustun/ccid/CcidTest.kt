@@ -200,6 +200,63 @@ class CcidTest {
         assertEquals(0x10, Ccid.Chain.EXPECTS_MORE_COMMAND)
     }
 
+    /**
+     * Table 6.2-1 pairs each command with the one reply it gets. Routing a
+     * command to the wrong reply type makes `exchange` reject the reader's
+     * correct answer, which is a failure no reader can be blamed for.
+     */
+    @Test
+    fun `every command routes to the reply table 6 point 2-1 gives it`() {
+        val expected = mapOf(
+            Ccid.PC_TO_RDR_ICC_POWER_ON to Ccid.RDR_TO_PC_DATA_BLOCK,
+            Ccid.PC_TO_RDR_XFR_BLOCK to Ccid.RDR_TO_PC_DATA_BLOCK,
+            Ccid.PC_TO_RDR_SECURE to Ccid.RDR_TO_PC_DATA_BLOCK,
+            Ccid.PC_TO_RDR_ICC_POWER_OFF to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_GET_SLOT_STATUS to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_ICC_CLOCK to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_T0_APDU to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_MECHANICAL to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_ABORT to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_GET_PARAMETERS to Ccid.RDR_TO_PC_PARAMETERS,
+            Ccid.PC_TO_RDR_SET_PARAMETERS to Ccid.RDR_TO_PC_PARAMETERS,
+            Ccid.PC_TO_RDR_RESET_PARAMETERS to Ccid.RDR_TO_PC_PARAMETERS,
+            Ccid.PC_TO_RDR_ESCAPE to Ccid.RDR_TO_PC_ESCAPE,
+            Ccid.PC_TO_RDR_SET_DATA_RATE_AND_CLOCK to Ccid.RDR_TO_PC_DATA_RATE_AND_CLOCK,
+        )
+        for ((command, reply) in expected) {
+            assertEquals(
+                "0x%02X should be answered by 0x%02X".format(command, reply),
+                reply, Ccid.expectedReply(command),
+            )
+        }
+    }
+
+    /** Table 5.3-1: the three requests carried on the control pipe. */
+    @Test
+    fun `control requests match table 5 point 3-1`() {
+        assertEquals(0x01, Ccid.ControlRequest.ABORT)
+        assertEquals(0x02, Ccid.ControlRequest.GET_CLOCK_FREQUENCIES)
+        assertEquals(0x03, Ccid.ControlRequest.GET_DATA_RATES)
+        // 00100001B host to device, 10100001B device to host, class, interface.
+        assertEquals(0b00100001, Ccid.ControlRequest.TYPE_OUT)
+        assertEquals(0b10100001, Ccid.ControlRequest.TYPE_IN)
+    }
+
+    /** §5.3.1: wValue carries bSlot in the low byte and bSeq in the high. */
+    @Test
+    fun `the abort request puts the slot low and the sequence high`() {
+        assertEquals(0x2A03, Ccid.ControlRequest.abortValue(slot = 0x03, seq = 0x2A))
+        assertEquals(0xFF00, Ccid.ControlRequest.abortValue(slot = 0x00, seq = 0xFF))
+        assertEquals(0x00FF, Ccid.ControlRequest.abortValue(slot = 0xFF, seq = 0x00))
+    }
+
+    /** Table 6.3-1: the interrupt endpoint carries two message types. */
+    @Test
+    fun `interrupt message types match table 6 point 3-1`() {
+        assertEquals(0x50, Ccid.RDR_TO_PC_NOTIFY_SLOT_CHANGE)
+        assertEquals(0x51, Ccid.RDR_TO_PC_HARDWARE_ERROR)
+    }
+
     @Test
     fun `a buffer shorter than a header parses to nothing`() {
         assertNull(Ccid.parseHeader(ByteArray(Ccid.HEADER - 1), Ccid.HEADER - 1))
