@@ -11,7 +11,7 @@ CryptoTokenKit on Apple platforms and pcsc-lite on Linux.
   assembling APDUs themselves
 - **Reader discovery**, multi-slot readers, and the USB permission flow Android
   requires
-- **Slot-change notification** from the interrupt endpoint, rather than polling
+- **Slot-change and hardware-error notification** from the interrupt endpoint
 - **PIN-pad readers**, so the PIN never enters the calling process
 - **No dependencies** beyond kotlinx-coroutines
 - **Apache-2.0**
@@ -106,9 +106,13 @@ Multi-slot readers take a slot index: `readers.open(device, slot = 1)`.
 `transport.slotCount` reports how many there are, and one transport drives one
 of them at a time.
 
-Where a reader has an interrupt endpoint, `transport.awaitSlotChange(timeoutMs)`
+Where a reader has an interrupt endpoint, `transport.awaitSlotEvent(timeoutMs)`
 reports insertion and removal as the reader observes them, in place of polling
-`cardPresent()`.
+`cardPresent()`. The same endpoint carries hardware errors, so the result is a
+`SlotEvent.Changed` or a `SlotEvent.HardwareError`.
+
+`transport.clockFrequencies()` and `transport.dataRates()` list what a reader
+will accept, which is what makes `setDataRateAndClockFrequency` usable.
 
 ## Tests
 
@@ -126,7 +130,7 @@ re-introducing known defects and confirming it goes red for each.
 
 | Document | Covers |
 |---|---|
-| [USB CCID 1.1][ccid] | message framing, `bStatus`/`bError`, `dwFeatures`, chaining |
+| [USB CCID 1.1][ccid] | message framing, `bStatus`/`bError`, `dwFeatures`, chaining, the control-pipe requests |
 | ISO/IEC 7816-3:2006 | the ATR (cl. 8), T=0 (cl. 10) and T=1 (cl. 11) |
 | ISO/IEC 13239 §4.2.5.2 | the CRC epilogue 7816-3 defers to |
 | [USB 2.0][usb] | bulk transfers, standard requests, descriptor layouts |
@@ -147,6 +151,7 @@ hardware are the most useful contribution anyone can make.
 - Slot-change notification
 - Parameters, Escape and Abort
 - Clock stop, T=0 class bytes, motorised functions and the data rate
+- The control-pipe requests: ABORT, GET_CLOCK_FREQUENCIES, GET_DATA_RATES
 
 ## Not implemented
 
@@ -155,8 +160,6 @@ hardware are the most useful contribution anyone can make.
   discards a verified PIN mid-operation, so the decision is left to the caller.
 - **Character-level readers.** Refused at `open`. They place the entire
   character layer on the host and no reader in production uses the level.
-- **The control-pipe half of Abort.** CCID §4.1 pairs the bulk ABORT with a
-  control request Android's USB host API does not expose.
 - **Extended-length APDUs longer than one CCID message.** The reader's
   `dwMaxCCIDMessageLength` is enforced; over-long commands are refused rather
   than truncated.
