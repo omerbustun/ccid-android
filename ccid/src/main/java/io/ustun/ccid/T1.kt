@@ -48,6 +48,20 @@ internal object T1 {
     enum class Edc { LRC, CRC }
 
     /**
+     * The kind of block a PCB encodes (§11.3.2.2), which is what §11.6.3.2
+     * Rule 7 branches on when a reply is invalid. An S-block is split by bit 6,
+     * because Rule 7.3 answers a request and a response differently.
+     */
+    enum class Kind { I_BLOCK, R_BLOCK, S_REQUEST, S_RESPONSE }
+
+    fun kindOf(pcb: Int): Kind = when {
+        pcb and 0x80 == 0 -> Kind.I_BLOCK
+        pcb and 0xC0 == 0x80 -> Kind.R_BLOCK
+        pcb and 0x20 != 0 -> Kind.S_RESPONSE
+        else -> Kind.S_REQUEST
+    }
+
+    /**
      * §4.2.5.2 of ISO/IEC 13239: the register run over the protected bytes and
      * the FCS together leaves this value when there were no errors.
      */
