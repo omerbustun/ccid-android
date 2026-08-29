@@ -23,14 +23,14 @@ Android CCID code exists, but as a part of something larger rather than as a
 library to depend on, and every permissively licensed one of them sends whole
 APDUs in `PC_to_RDR_XfrBlock` and needs a reader that assembles them.
 
-| | |
-|---|---|
-| [OpenKeychain][ok] | GPL-3.0. The only other implementation that runs T=1 and T=0 on the host, and unusable in a closed-source application |
-| [YubiKit][yk] | Apache-2.0, shaped around YubiKeys |
-| [Multipaz][mp] | Apache-2.0, a CCID driver inside a digital-credentials SDK |
-| [nfcim/ccid][nc] | MIT, the Android half of a Flutter plugin |
-| [android-pcsclike][sc] | Kotlin and reader-agnostic in shape, but licensed for use with SpringCard hardware alone |
-| [RIA DigiDoc][rd] | LGPL-2.1, and reaches readers through the ACS and Identiv SDKs |
+| Project | License | Shape |
+|---|---|---|
+| [OpenKeychain][ok] | GPL-3.0 | The only other implementation that runs T=1 and T=0 on the host, and unusable in a closed-source application |
+| [YubiKit][yk] | Apache-2.0 | Shaped around YubiKeys |
+| [Multipaz][mp] | Apache-2.0 | A CCID driver inside a digital-credentials SDK |
+| [nfcim/ccid][nc] | MIT | The Android half of a Flutter plugin |
+| [android-pcsclike][sc] | SpringCard only | Kotlin and reader-agnostic in shape, but usable with SpringCard hardware alone |
+| [RIA DigiDoc][rd] | LGPL-2.1 | Reaches readers through the ACS and Identiv SDKs |
 
 A reader reporting TPDU level hands the T=1 block layer back to the host. That
 layer, with the ATR parsing and the error recovery it needs, is most of what is
