@@ -6,8 +6,7 @@ Android has no smart-card stack, so an application that needs a card in a reader
 has to speak CCID itself. This library is that layer: the equivalent of
 CryptoTokenKit on Apple platforms and pcsc-lite on Linux.
 
-- **CCID framing** for the commands a card session needs: power, slot status,
-  transfer, parameters, escape, secure PIN entry and abort
+- **CCID framing**, all fourteen bulk-OUT commands, every exchange level
 - **T=1 and T=0** on the host, for readers that pass blocks through rather than
   assembling APDUs themselves
 - **Reader discovery**, multi-slot readers, and the USB permission flow Android
@@ -111,6 +110,18 @@ Where a reader has an interrupt endpoint, `transport.awaitSlotChange(timeoutMs)`
 reports insertion and removal as the reader observes them, in place of polling
 `cardPresent()`.
 
+## Tests
+
+```
+./gradlew :ccid:testDebugUnitTest
+```
+
+The protocol layers carry no Android types and are tested on the JVM. Each
+expected value is one a standard states outright, because a test that recomputes
+an answer the way the implementation does cannot tell a correct implementation
+from a consistent misreading of the specification. The suite is checked by
+re-introducing known defects and confirming it goes red for each.
+
 ## Specifications
 
 | Document | Covers |
@@ -134,7 +145,8 @@ hardware are the most useful contribution anyone can make.
 - Multi-slot readers
 - PIN-pad entry
 - Slot-change notification
-- Parameters, Escape, Abort
+- Parameters, Escape and Abort
+- Clock stop, T=0 class bytes, motorised functions and the data rate
 
 ## Not implemented
 
@@ -145,8 +157,6 @@ hardware are the most useful contribution anyone can make.
   character layer on the host and no reader in production uses the level.
 - **The control-pipe half of Abort.** CCID §4.1 pairs the bulk ABORT with a
   control request Android's USB host API does not expose.
-- **`PC_to_RDR_IccClock`, `Mechanical`, `T0APDU` and `SetDataRateAndClockFrequency`.**
-  None of the four bears on a signing session.
 - **Extended-length APDUs longer than one CCID message.** The reader's
   `dwMaxCCIDMessageLength` is enforced; over-long commands are refused rather
   than truncated.
