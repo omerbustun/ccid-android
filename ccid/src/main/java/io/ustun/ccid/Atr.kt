@@ -23,14 +23,14 @@ internal object Atr {
      * offering no TD1 is T=0 by default.
      */
     fun firstProtocol(atr: ByteArray): Int =
-        groups(atr).firstOrNull { it.protocol != GLOBAL }?.protocol ?: 0
+        groups(atr).firstOrNull { it.named != GLOBAL }?.named ?: 0
 
     /**
      * §11.4.4. Bit 1 of the first TC for T=1 selects the epilogue: CRC when
      * set, LRC otherwise, which the same clause names as the default.
      */
     fun edc(atr: ByteArray): T1.Edc {
-        val tc = firstFor(atr, 1) { it.tc } ?: return T1.Edc.LRC
+        val tc = firstTc(atr, 1) ?: return T1.Edc.LRC
         return if (tc and 0x01 != 0) T1.Edc.CRC else T1.Edc.LRC
     }
 
@@ -40,39 +40,56 @@ internal object Atr {
      * a card offering no such byte keeps the default.
      */
     fun ifsc(atr: ByteArray): Int {
-        val ta = firstFor(atr, 1) { it.ta } ?: return T1.DEFAULT_IFS
+        val ta = firstTa(atr, 1) ?: return T1.DEFAULT_IFS
         return if (ta in 1..T1.MAX_INFO) ta else T1.DEFAULT_IFS
     }
 
     /**
-     * TA and TC of one group, with the protocol the preceding TD named. TB is
-     * skipped: for T=1 it carries BWI, which the reader negotiates itself.
+     * One group of interface bytes, numbered as §8.2.3 numbers them, carrying
+     * the type named by the preceding TD. TB is skipped: for T=1 it holds BWI
+     * and CWI, which the reader negotiates itself.
      */
-    private class Group(val protocol: Int, val ta: Int?, val tc: Int?)
+    private class Group(val index: Int, val named: Int, val ta: Int?, val tc: Int?) {
 
-    /** T0's own interface bytes are global parameters and describe no protocol. */
+        /** §8.2.3. TA1 and TA2 are global; only from TA3 does TD-1 name the type. */
+        val taProtocol: Int get() = if (index <= 2) GLOBAL else named
+
+        /** §8.2.3. TC1 is global and TC2 belongs to T=0; TC3 onwards follow TD-1. */
+        val tcProtocol: Int get() = when (index) {
+            1 -> GLOBAL
+            2 -> 0
+            else -> named
+        }
+    }
+
+    /** Not a transmission protocol: a global parameter, or the T=15 that marks one. */
     private const val GLOBAL = -1
 
-    /** The first of an interface byte present for [protocol], as §8.2.3 orders them. */
-    private fun firstFor(atr: ByteArray, protocol: Int, byte: (Group) -> Int?): Int? =
-        groups(atr).firstOrNull { it.protocol == protocol && byte(it) != null }?.let(byte)
+    private fun firstTa(atr: ByteArray, protocol: Int): Int? =
+        groups(atr).firstOrNull { it.taProtocol == protocol && it.ta != null }?.ta
+
+    private fun firstTc(atr: ByteArray, protocol: Int): Int? =
+        groups(atr).firstOrNull { it.tcProtocol == protocol && it.tc != null }?.tc
 
     private fun groups(atr: ByteArray): List<Group> {
         if (atr.size < 2) return emptyList()
         val out = mutableListOf<Group>()
         var i = 1
         var y = (atr[i].toInt() and 0xF0) ushr 4     // Y1, carried by T0
-        var protocol = GLOBAL
+        var named = GLOBAL
+        var index = 1
         i++
         while (true) {
             val ta = if (y and 0x1 != 0) byteAt(atr, i++) else null
             if (y and 0x2 != 0) i++
             val tc = if (y and 0x4 != 0) byteAt(atr, i++) else null
-            out += Group(protocol, ta, tc)
+            out += Group(index, named, ta, tc)
             if (y and 0x8 == 0) return out
             val td = byteAt(atr, i++) ?: return out
-            protocol = td and 0x0F
+            // §8.2.3: after T=15 the following bytes are global, not protocol-specific.
+            named = (td and 0x0F).let { if (it == 15) GLOBAL else it }
             y = (td and 0xF0) ushr 4
+            index++
         }
     }
 
