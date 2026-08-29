@@ -29,6 +29,10 @@ class UsbCcidTransport internal constructor(
     private val features: Int,
     /** CCID Table 5.1-1: `dwMechanical`, the motorised functions this reader has. */
     private val mechanicalFunctions: Int,
+    /** CCID Table 5.1-1: `bNumClockSupported`, which sizes GET_CLOCK_FREQUENCIES. */
+    private val clockCount: Int,
+    /** CCID Table 5.1-1: `bNumDataRatesSupported`, which sizes GET_DATA_RATES. */
+    private val dataRateCount: Int,
     private val maxMessageLength: Int,
     private val interruptIn: UsbEndpoint?,
     /** CCID Table 5.1-1: `bMaxSlotIndex`, so slot count is one more than this. */
@@ -84,6 +88,7 @@ class UsbCcidTransport internal constructor(
             ifsc = Atr.ifsc(atr)
             if (exchangeLevel == Ccid.ExchangeLevel.TPDU && protocol == 1) {
                 Log.d(TAG, "T=1 with IFSC $ifsc and ${if (edc == T1.Edc.CRC) "CRC" else "LRC"}")
+                crossCheckParameters()
                 negotiateIfs()
             }
         }
@@ -245,6 +250,32 @@ class UsbCcidTransport internal constructor(
      * of chained blocks. Skipped when the reader declares `AUTO_IFSD`. A refusal
      * leaves the default in force and is not an error.
      */
+    /**
+     * Compare the reader's negotiated T=1 parameters against the ATR.
+     *
+     * CCID §6.2.3 lays out the T=1 structure from offset 10: `bmTCCKST1` is its
+     * second byte, whose bit 0 selects CRC over LRC, and `bIFSC` its sixth.
+     *
+     * The ATR stays authoritative, because at TPDU level this host runs the
+     * block layer and 7816-3 §11.4.4 makes the card's TC3 the source. A
+     * disagreement means one of the two readings is wrong, which is worth
+     * seeing in a trace rather than discovering as blocks a card will not
+     * accept. Best-effort: a reader may refuse the command outright.
+     */
+    private fun crossCheckParameters() {
+        val parameters = runCatching { getParametersLocked() }.getOrNull() ?: return
+        if (parameters.protocol != 1 || parameters.data.size < 6) return
+
+        val readerEdc = if (parameters.data[1].toInt() and 0x01 != 0) T1.Edc.CRC else T1.Edc.LRC
+        if (readerEdc != edc) {
+            Log.w(TAG, "reader negotiated $readerEdc but the ATR asks for $edc")
+        }
+        val readerIfsc = parameters.data[5].toInt() and 0xFF
+        if (readerIfsc in 1..T1.MAX_INFO && readerIfsc != ifsc) {
+            Log.w(TAG, "reader negotiated IFSC $readerIfsc but the ATR gives $ifsc")
+        }
+    }
+
     private fun negotiateIfs() {
         if (features and Ccid.Feature.AUTO_IFSD != 0) return
         runCatching { t1Exchange(T1.ifsRequest(T1.MAX_INFO, edc)) }
@@ -464,10 +495,17 @@ class UsbCcidTransport internal constructor(
                     resynchronise()
                     throw failed("Card communication could not be recovered", CcidException.Reason.COMMUNICATION)
                 }
-                // Rule 7.1 after an I-block, asking again for the block the card
-                // owes; Rules 7.2 and 7.3 retransmit what was last sent.
-                val lastWasIBlock = (out[1].toInt() and 0x80) == 0
-                if (lastWasIBlock) out = T1.rBlockError(t1CardSequence, edcError = true, edc = edc)
+                // §11.6.3.2 Rule 7 branches on what was last sent.
+                out = when (T1.kindOf(out[1].toInt() and 0xFF)) {
+                    // Rule 7.1, and the second half of 7.3: ask again for the
+                    // I-block the card owes.
+                    T1.Kind.I_BLOCK,
+                    T1.Kind.S_RESPONSE,
+                    -> T1.rBlockError(t1CardSequence, edcError = true, edc = edc)
+
+                    // Rule 7.2 and the first half of 7.3: send the same again.
+                    T1.Kind.R_BLOCK, T1.Kind.S_REQUEST -> out
+                }
                 continue
             }
             if (parsed.isWtxRequest) {
@@ -547,26 +585,7 @@ class UsbCcidTransport internal constructor(
         val seq = message[6].toInt() and 0xFF
         val expected = Ccid.expectedReply(message[0].toInt() and 0xFF)
 
-        var sent = 0
-        var retried = false
-        while (sent < message.size) {
-            val n = connection.bulkTransfer(
-                bulkOut,
-                message.copyOfRange(sent, message.size),
-                message.size - sent,
-                WRITE_TIMEOUT_MS,
-            )
-            if (n <= 0) {
-                if (!retried) {
-                    retried = true
-                    clearHalt(bulkOut)
-                    clearHalt(bulkIn)
-                    continue
-                }
-                throw failed("Write to the reader failed", CcidException.Reason.COMMUNICATION)
-            }
-            sent += n
-        }
+        writeMessage(message)
 
         var waited = 0
         while (true) {
@@ -599,6 +618,36 @@ class UsbCcidTransport internal constructor(
      * pending transfer on the endpoint. Read buffers are therefore always a
      * whole packet.
      */
+    /**
+     * Put one whole message on the bulk-OUT endpoint.
+     *
+     * A first write can fail on an endpoint left halted by an earlier session,
+     * which USB 2.0 §9.4.1 clears; one retry covers that without masking a
+     * reader that is genuinely gone.
+     */
+    private fun writeMessage(message: ByteArray) {
+        var sent = 0
+        var retried = false
+        while (sent < message.size) {
+            val n = connection.bulkTransfer(
+                bulkOut,
+                message.copyOfRange(sent, message.size),
+                message.size - sent,
+                WRITE_TIMEOUT_MS,
+            )
+            if (n <= 0) {
+                if (!retried) {
+                    retried = true
+                    clearHalt(bulkOut)
+                    clearHalt(bulkIn)
+                    continue
+                }
+                throw failed("Write to the reader failed", CcidException.Reason.COMMUNICATION)
+            }
+            sent += n
+        }
+    }
+
     private fun readMessage(): Ccid.Response {
         val packetSize = bulkIn.maxPacketSize
         val packet = ByteArray(packetSize)
@@ -664,8 +713,65 @@ class UsbCcidTransport internal constructor(
      * API does not expose; only the bulk half is issued. Readers requiring both
      * will not abort.
      */
-    fun abort() {
-        lock.withLock { exchange(Ccid.message(Ccid.PC_TO_RDR_ABORT, slot, nextSeq())) }
+    fun abort() = lock.withLock {
+        val seq = nextSeq()
+        // §5.3.1: the control request and the bulk command are both required,
+        // and in that order, "due to the asynchronous nature of control pipes
+        // and Bulk-Out pipes relative to each other". They must agree on bSlot
+        // and bSeq or the reader fails every later command to this slot.
+        connection.controlTransfer(
+            Ccid.ControlRequest.TYPE_OUT,
+            Ccid.ControlRequest.ABORT,
+            Ccid.ControlRequest.abortValue(slot, seq),
+            iface.id,
+            null, 0, CONTROL_TIMEOUT_MS,
+        )
+        writeMessage(Ccid.message(Ccid.PC_TO_RDR_ABORT, slot, seq))
+
+        // §5.3.1: "It is the responsibility of the Host to keep track of
+        // pending ABORT commands for slots and discard all responses from the
+        // aborted slots, if any, until the Host receives the
+        // RDR_to_PC_SlotStatus which matches the PC_to_RDR_Abort message."
+        var seen = 0
+        while (seen++ < MAX_ABORT_REPLIES) {
+            val response = runCatching { readMessage() }.getOrNull() ?: break
+            if (response.slot == slot &&
+                response.seq == seq &&
+                response.type == Ccid.RDR_TO_PC_SLOT_STATUS
+            ) {
+                return@withLock
+            }
+        }
+        Log.d(TAG, "abort was not acknowledged for slot $slot")
+    }
+
+    /**
+     * The clock frequencies this reader accepts, in kHz (CCID §5.3.2).
+     *
+     * Empty when the descriptor reports `bNumClockSupported` as zero, which
+     * §5.3.2 says excuses a reader from answering the request at all. Pair this
+     * with [setDataRateAndClockFrequency], which otherwise has no way to know
+     * what a reader will take.
+     */
+    fun clockFrequencies(): IntArray = lock.withLock {
+        readDwordList(Ccid.ControlRequest.GET_CLOCK_FREQUENCIES, clockCount)
+    }
+
+    /** The data rates this reader accepts, in bits per second (CCID §5.3.3). */
+    fun dataRates(): IntArray = lock.withLock {
+        readDwordList(Ccid.ControlRequest.GET_DATA_RATES, dataRateCount)
+    }
+
+    /** §5.3.2 and §5.3.3 both answer with an array of little-endian double words. */
+    private fun readDwordList(request: Int, count: Int): IntArray {
+        if (count <= 0) return IntArray(0)
+        val buffer = ByteArray(count * 4)
+        val n = connection.controlTransfer(
+            Ccid.ControlRequest.TYPE_IN, request, 0x0000, iface.id,
+            buffer, buffer.size, CONTROL_TIMEOUT_MS,
+        )
+        if (n < 4) return IntArray(0)
+        return IntArray(n / 4) { readLe32(buffer, it * 4) }
     }
 
     /**
@@ -675,9 +781,11 @@ class UsbCcidTransport internal constructor(
      * `bClockCommand` 01h stops it in the state `bClockStop` selected through
      * [setParameters]; 00h restarts it.
      *
+     * Returns the state the reader reports the clock reached.
+     *
      * @throws CcidException if the reader does not declare clock stop mode.
      */
-    fun clockStopped(stopped: Boolean) = lock.withLock {
+    fun clockStopped(stopped: Boolean): ClockStatus = lock.withLock {
         if (features and Ccid.Feature.CLOCK_STOP == 0) {
             throw failed(
                 "This reader cannot stop the card clock",
@@ -689,6 +797,9 @@ class UsbCcidTransport internal constructor(
             Ccid.message(Ccid.PC_TO_RDR_ICC_CLOCK, slot, nextSeq(), p0 = command)
         )
         if (response.failed) throw failed(Ccid.errorText(response.error))
+        // §6.2.2 puts bClockStatus at offset 9, so the reader says what state
+        // the clock actually reached rather than only that it accepted.
+        ClockStatus.of(response.messageSpecific)
     }
 
     /**
@@ -786,6 +897,28 @@ class UsbCcidTransport internal constructor(
     /** A slot's clock frequency in kHz and data rate in bits per second. */
     data class ClockAndDataRate(val clockKHz: Int, val dataRateBps: Int)
 
+    /** What the interrupt endpoint reports, per CCID §6.3. */
+    sealed interface SlotEvent {
+
+        /** §6.3.1. One entry per slot, true where a card is present. */
+        class Changed(val present: BooleanArray) : SlotEvent
+
+        /**
+         * §6.3.2. `code` is `bHardwareErrorCode`, of which only 01h,
+         * overcurrent, is defined; the rest are reserved.
+         */
+        data class HardwareError(val slot: Int, val code: Int) : SlotEvent
+    }
+
+    /** `bClockStatus` on a slot status reply (CCID §6.2.2). */
+    enum class ClockStatus {
+        RUNNING, STOPPED_LOW, STOPPED_HIGH, STOPPED_UNKNOWN;
+
+        internal companion object {
+            fun of(value: Int): ClockStatus = entries.getOrElse(value) { STOPPED_UNKNOWN }
+        }
+    }
+
     private fun le32(into: ByteArray, at: Int, value: Int) {
         into[at] = (value and 0xFF).toByte()
         into[at + 1] = (value ushr 8 and 0xFF).toByte()
@@ -800,10 +933,12 @@ class UsbCcidTransport internal constructor(
             ((from[at + 3].toInt() and 0xFF) shl 24)
 
     /** CCID §6.1.5. The protocol parameters currently in force. */
-    fun getParameters(): Parameters = lock.withLock {
+    fun getParameters(): Parameters = lock.withLock { getParametersLocked() }
+
+    private fun getParametersLocked(): Parameters {
         val response = exchange(Ccid.message(Ccid.PC_TO_RDR_GET_PARAMETERS, slot, nextSeq()))
         if (response.failed) throw failed(Ccid.errorText(response.error))
-        Parameters(response.messageSpecific, response.data)
+        return Parameters(response.messageSpecific, response.data)
     }
 
     /** CCID §6.1.6. Return the slot to its default parameters. */
@@ -920,17 +1055,32 @@ class UsbCcidTransport internal constructor(
      * The interrupt endpoint is independent of the bulk pair, so this waits
      * without the transport lock and leaves the card usable meanwhile.
      */
-    fun awaitSlotChange(timeoutMs: Int): BooleanArray? {
+    fun awaitSlotEvent(timeoutMs: Int): SlotEvent? {
         val endpoint = interruptIn ?: return null
         val buffer = ByteArray(endpoint.maxPacketSize)
         val n = runCatching {
             connection.bulkTransfer(endpoint, buffer, buffer.size, timeoutMs)
         }.getOrDefault(-1)
-        if (n < 2 || (buffer[0].toInt() and 0xFF) != Ccid.RDR_TO_PC_NOTIFY_SLOT_CHANGE) return null
-        return BooleanArray(slotCount) { i ->
-            val byteIndex = 1 + (i / 4)
-            if (byteIndex >= n) false
-            else (buffer[byteIndex].toInt() ushr ((i % 4) * 2)) and 0x01 != 0
+        if (n < 2) return null
+        return when (buffer[0].toInt() and 0xFF) {
+            // §6.3.1: two bits per slot, the lower saying a card is present and
+            // the upper that it changed. Only presence is surfaced.
+            Ccid.RDR_TO_PC_NOTIFY_SLOT_CHANGE -> SlotEvent.Changed(
+                BooleanArray(slotCount) { i ->
+                    val byteIndex = 1 + (i / 4)
+                    if (byteIndex >= n) false
+                    else (buffer[byteIndex].toInt() ushr ((i % 4) * 2)) and 0x01 != 0
+                }
+            )
+
+            // §6.3.2: bSlot, bSeq, then bHardwareErrorCode. Dropping this reads
+            // an overcurrent as though nothing had happened.
+            Ccid.RDR_TO_PC_HARDWARE_ERROR -> if (n < 4) null else SlotEvent.HardwareError(
+                slot = buffer[1].toInt() and 0xFF,
+                code = buffer[3].toInt() and 0xFF,
+            )
+
+            else -> null
         }
     }
 
@@ -968,6 +1118,9 @@ class UsbCcidTransport internal constructor(
         /** 7816-3 §11.6.3.2 Rule 7.4.2: two further attempts before S(RESYNCH). */
         const val MAX_RESENDS = 2
 
+        /** How many stray replies to discard while waiting for an abort to land. */
+        const val MAX_ABORT_REPLIES = 8
+
         /** A T=0 command deferring more often than this is not going to finish. */
         const val MAX_T0_STEPS = 64
     }
@@ -988,6 +1141,8 @@ internal object CcidInterface {
         val level: Ccid.ExchangeLevel,
         val features: Int,
         val mechanical: Int,
+        val clockCount: Int,
+        val dataRateCount: Int,
         val maxMessageLength: Int,
         val slotCount: Int,
     )
@@ -1017,6 +1172,7 @@ internal object CcidInterface {
             return Found(
                 iface, bulkIn, bulkOut, interruptIn,
                 caps.level, caps.features, caps.mechanical,
+                caps.clockCount, caps.dataRateCount,
                 caps.maxMessageLength, caps.slotCount,
             )
         }
@@ -1027,6 +1183,8 @@ internal object CcidInterface {
         val level: Ccid.ExchangeLevel,
         val features: Int,
         val mechanical: Int,
+        val clockCount: Int,
+        val dataRateCount: Int,
         val maxMessageLength: Int,
         val slotCount: Int,
     )
@@ -1042,7 +1200,7 @@ internal object CcidInterface {
      * dwMechanical at 36, dwMaxCCIDMessageLength at 44, all little-endian.
      */
     private fun capabilities(connection: UsbDeviceConnection, interfaceId: Int): Capabilities {
-        val fallback = Capabilities(Ccid.ExchangeLevel.SHORT_APDU, 0, 0, 0, 1)
+        val fallback = Capabilities(Ccid.ExchangeLevel.SHORT_APDU, 0, 0, 0, 0, 0, 1)
         val raw = connection.rawDescriptors ?: return fallback
         var i = 0
         var inTarget = false
@@ -1056,7 +1214,10 @@ internal object CcidInterface {
             }
 
             if (type == 0x21 && inTarget && length >= 44 && i + 43 < raw.size) {
-                // Table 5.1-1: dwMechanical at offset 36, dwFeatures at 40.
+                // Table 5.1-1: bNumClockSupported at 18, bNumDataRatesSupported
+                // at 27, dwMechanical at 36, dwFeatures at 40.
+                val clocks = raw[i + 18].toInt() and 0xFF
+                val rates = raw[i + 27].toInt() and 0xFF
                 val mechanical = le32(raw, i + 36)
                 val features = le32(raw, i + 40)
                 val maxLen = if (length >= 48 && i + 47 < raw.size) le32(raw, i + 44) else 0
@@ -1068,7 +1229,8 @@ internal object CcidInterface {
                         "level=${Ccid.ExchangeLevel.fromFeatures(features)} maxMessage=$maxLen slots=$slots",
                 )
                 return Capabilities(
-                    Ccid.ExchangeLevel.fromFeatures(features), features, mechanical, maxLen, slots,
+                    Ccid.ExchangeLevel.fromFeatures(features), features, mechanical,
+                    clocks, rates, maxLen, slots,
                 )
             }
             i += length
