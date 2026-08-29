@@ -24,7 +24,7 @@ internal object Ccid {
     const val PC_TO_RDR_SET_PARAMETERS = 0x61
     const val PC_TO_RDR_ESCAPE = 0x6B
     const val PC_TO_RDR_ICC_CLOCK = 0x6E
-    const val PC_TO_RDR_T0_APDU = 0x6A
+    const val PC_TO_RDR_T0APDU = 0x6A
     const val PC_TO_RDR_SECURE = 0x69
     const val PC_TO_RDR_MECHANICAL = 0x71
     const val PC_TO_RDR_ABORT = 0x72
@@ -63,15 +63,12 @@ internal object Ccid {
         fun abortValue(slot: Int, seq: Int): Int = ((seq and 0xFF) shl 8) or (slot and 0xFF)
     }
 
-    /** `dwFeatures` bits, Table 5.1-1. */
+    /** `dwFeatures` bits, Table 5.1-1, in the order that table lists them. */
     object Feature {
         /** The CCID sets protocol parameters from the ATR itself. */
         const val AUTO_PARAM_FROM_ATR = 0x0000_0002
         const val AUTO_ACTIVATE_ON_INSERT = 0x0000_0004
         const val AUTO_VOLTAGE = 0x0000_0008
-
-        /** The CCID performs the IFSD exchange itself, as the first exchange. */
-        const val AUTO_IFSD = 0x0000_0400
 
         /** The CCID negotiates protocol parameters; the host must not set them. */
         const val AUTO_PARAM_NEGOTIATION = 0x0000_0040
@@ -81,6 +78,9 @@ internal object Ccid {
 
         /** The CCID can put the card into clock stop mode. */
         const val CLOCK_STOP = 0x0000_0100
+
+        /** The CCID performs the IFSD exchange itself, as the first exchange. */
+        const val AUTO_IFSD = 0x0000_0400
     }
 
     /**
@@ -250,14 +250,24 @@ internal object Ccid {
         )
     }
 
-    /** `dwLength`, the payload size the header declares. */
-    fun declaredLength(buf: ByteArray, length: Int): Int {
-        if (length < HEADER) return 0
-        return (buf[1].toInt() and 0xFF) or
-            ((buf[2].toInt() and 0xFF) shl 8) or
-            ((buf[3].toInt() and 0xFF) shl 16) or
-            ((buf[4].toInt() and 0xFF) shl 24)
+    /** Read a little-endian double word, the only integer width CCID uses. */
+    fun le32(from: ByteArray, at: Int): Int =
+        (from[at].toInt() and 0xFF) or
+            ((from[at + 1].toInt() and 0xFF) shl 8) or
+            ((from[at + 2].toInt() and 0xFF) shl 16) or
+            ((from[at + 3].toInt() and 0xFF) shl 24)
+
+    /** Write a little-endian double word. */
+    fun putLe32(into: ByteArray, at: Int, value: Int) {
+        into[at] = (value and 0xFF).toByte()
+        into[at + 1] = (value ushr 8 and 0xFF).toByte()
+        into[at + 2] = (value ushr 16 and 0xFF).toByte()
+        into[at + 3] = (value ushr 24 and 0xFF).toByte()
     }
+
+    /** `dwLength`, the payload size the header declares. */
+    fun declaredLength(buf: ByteArray, length: Int): Int =
+        if (length < HEADER) 0 else le32(buf, 1)
 
     /**
      * The slot error register, Table 6.2-2. A signed byte with three ranges:

@@ -65,7 +65,7 @@ class CcidTest {
         assertEquals(0x61, Ccid.PC_TO_RDR_SET_PARAMETERS)
         assertEquals(0x6B, Ccid.PC_TO_RDR_ESCAPE)
         assertEquals(0x6E, Ccid.PC_TO_RDR_ICC_CLOCK)
-        assertEquals(0x6A, Ccid.PC_TO_RDR_T0_APDU)
+        assertEquals(0x6A, Ccid.PC_TO_RDR_T0APDU)
         assertEquals(0x69, Ccid.PC_TO_RDR_SECURE)
         assertEquals(0x71, Ccid.PC_TO_RDR_MECHANICAL)
         assertEquals(0x72, Ccid.PC_TO_RDR_ABORT)
@@ -214,7 +214,7 @@ class CcidTest {
             Ccid.PC_TO_RDR_ICC_POWER_OFF to Ccid.RDR_TO_PC_SLOT_STATUS,
             Ccid.PC_TO_RDR_GET_SLOT_STATUS to Ccid.RDR_TO_PC_SLOT_STATUS,
             Ccid.PC_TO_RDR_ICC_CLOCK to Ccid.RDR_TO_PC_SLOT_STATUS,
-            Ccid.PC_TO_RDR_T0_APDU to Ccid.RDR_TO_PC_SLOT_STATUS,
+            Ccid.PC_TO_RDR_T0APDU to Ccid.RDR_TO_PC_SLOT_STATUS,
             Ccid.PC_TO_RDR_MECHANICAL to Ccid.RDR_TO_PC_SLOT_STATUS,
             Ccid.PC_TO_RDR_ABORT to Ccid.RDR_TO_PC_SLOT_STATUS,
             Ccid.PC_TO_RDR_GET_PARAMETERS to Ccid.RDR_TO_PC_PARAMETERS,
