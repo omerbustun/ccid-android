@@ -251,16 +251,12 @@ class UsbCcidTransport internal constructor(
      * leaves the default in force and is not an error.
      */
     /**
-     * Compare the reader's negotiated T=1 parameters against the ATR.
+     * Log where the reader's negotiated T=1 parameters disagree with the ATR.
      *
-     * CCID §6.2.3 lays out the T=1 structure from offset 10: `bmTCCKST1` is its
-     * second byte, whose bit 0 selects CRC over LRC, and `bIFSC` its sixth.
-     *
-     * The ATR stays authoritative, because at TPDU level this host runs the
-     * block layer and 7816-3 §11.4.4 makes the card's TC3 the source. A
-     * disagreement means one of the two readings is wrong, which is worth
-     * seeing in a trace rather than discovering as blocks a card will not
-     * accept. Best-effort: a reader may refuse the command outright.
+     * CCID §6.2.3 puts `bmTCCKST1` second in the T=1 structure, bit 0 selecting
+     * CRC, and `bIFSC` sixth. The ATR stays authoritative because 7816-3
+     * §11.4.4 makes the card's TC3 the source; a disagreement means one of the
+     * two readings is wrong.
      */
     private fun crossCheckParameters() {
         val parameters = runCatching { getParametersLocked() }.getOrNull() ?: return
@@ -707,18 +703,17 @@ class UsbCcidTransport internal constructor(
     // ── Optional reader operations ──────────────────────────────────────────
 
     /**
-     * Stop the current transfer on this slot (CCID §6.1.13).
+     * Stop the current transfer on this slot (CCID §6.1.13, §5.3.1).
      *
-     * §4.1 pairs this with a control-pipe ABORT request that Android's USB host
-     * API does not expose; only the bulk half is issued. Readers requiring both
-     * will not abort.
+     * Three steps: the control-pipe ABORT, the bulk command carrying the same
+     * slot and sequence, then discarding replies until the matching slot status
+     * arrives. A reader fails every later command to a slot whose abort was
+     * left half finished.
      */
     fun abort() = lock.withLock {
         val seq = nextSeq()
-        // §5.3.1: the control request and the bulk command are both required,
-        // and in that order, "due to the asynchronous nature of control pipes
-        // and Bulk-Out pipes relative to each other". They must agree on bSlot
-        // and bSeq or the reader fails every later command to this slot.
+        // §5.3.1: control pipe first, then bulk, because the two run
+        // asynchronously relative to each other. Both carry the same seq.
         connection.controlTransfer(
             Ccid.ControlRequest.TYPE_OUT,
             Ccid.ControlRequest.ABORT,
@@ -728,10 +723,8 @@ class UsbCcidTransport internal constructor(
         )
         writeMessage(Ccid.message(Ccid.PC_TO_RDR_ABORT, slot, seq))
 
-        // §5.3.1: "It is the responsibility of the Host to keep track of
-        // pending ABORT commands for slots and discard all responses from the
-        // aborted slots, if any, until the Host receives the
-        // RDR_to_PC_SlotStatus which matches the PC_to_RDR_Abort message."
+        // §5.3.1: discard replies for the aborted slot until the slot status
+        // matching this abort arrives.
         var seen = 0
         while (seen++ < MAX_ABORT_REPLIES) {
             val response = runCatching { readMessage() }.getOrNull() ?: break
@@ -806,15 +799,12 @@ class UsbCcidTransport internal constructor(
      * Choose the class byte the reader puts on the GET RESPONSE and ENVELOPE
      * commands it issues on the host's behalf under T=0 (CCID §6.1.10).
      *
-     * A null argument leaves that command at the reader's default. Passing
-     * [Ccid.T0Apdu.ECHO_CLASS] makes the reader echo the class byte of the
-     * APDU it is carrying.
+     * A null argument leaves that command at the reader's default;
+     * [Ccid.T0Apdu.ECHO_CLASS] makes the reader echo the APDU's own class byte.
+     * The setting is slot-specific and lapses when the slot loses power.
      *
-     * §6.1.10 confines this to readers at APDU level, since only they issue
-     * those commands; at TPDU level [T0] does that work here instead. The
-     * setting is slot-specific and lapses when the slot loses power.
-     *
-     * @throws CcidException if the reader exchanges at TPDU level.
+     * @throws CcidException if the reader exchanges at TPDU level, where
+     * §6.1.10 does not apply because [T0] does this work here instead.
      */
     fun setT0ApduClasses(getResponse: Int? = null, envelope: Int? = null) = lock.withLock {
         if (exchangeLevel != Ccid.ExchangeLevel.SHORT_APDU &&
