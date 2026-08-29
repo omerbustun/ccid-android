@@ -19,13 +19,15 @@ CryptoTokenKit on Apple platforms and pcsc-lite on Linux.
 
 ## Why it exists
 
-Android CCID code exists, but as a part of something larger rather than as a
-library to depend on, and every permissively licensed one of them sends whole
-APDUs in `PC_to_RDR_XfrBlock` and needs a reader that assembles them.
+Android ships no smart-card API for a USB reader. The CCID code that exists is
+copyleft, or a JNI port of a C driver, or tied to one vendor's hardware, and
+every permissively licensed one of them sends whole APDUs in
+`PC_to_RDR_XfrBlock` and needs a reader that assembles them.
 
 | Project | License | Shape |
 |---|---|---|
-| [OpenKeychain][ok] | GPL-3.0 | The only other implementation that runs T=1 and T=0 on the host, and unusable in a closed-source application |
+| [OpenKeychain][ok] | GPL-3.0 | Runs the block protocols on the host, and unusable in a closed-source application |
+| [pcsc-lite CCID][mk] | LGPL-2.1 | The reference C driver ported to Android, over JNI, and built around pcscd |
 | [YubiKit][yk] | Apache-2.0 | Shaped around YubiKeys |
 | [Multipaz][mp] | Apache-2.0 | A CCID driver inside a digital-credentials SDK |
 | [nfcim/ccid][nc] | MIT | The Android half of a Flutter plugin |
@@ -37,6 +39,7 @@ layer, with the ATR parsing and the error recovery it needs, is most of what is
 here.
 
 [ok]: https://github.com/open-keychain/open-keychain
+[mk]: https://github.com/mikma/ccid-android
 [yk]: https://github.com/Yubico/yubikit-android
 [mp]: https://github.com/openwallet-foundation/multipaz
 [nc]: https://github.com/nfcim/ccid
