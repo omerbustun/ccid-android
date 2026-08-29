@@ -23,14 +23,19 @@ internal object Ccid {
     const val PC_TO_RDR_RESET_PARAMETERS = 0x6D
     const val PC_TO_RDR_SET_PARAMETERS = 0x61
     const val PC_TO_RDR_ESCAPE = 0x6B
+    const val PC_TO_RDR_ICC_CLOCK = 0x6E
+    const val PC_TO_RDR_T0_APDU = 0x6A
     const val PC_TO_RDR_SECURE = 0x69
+    const val PC_TO_RDR_MECHANICAL = 0x71
     const val PC_TO_RDR_ABORT = 0x72
+    const val PC_TO_RDR_SET_DATA_RATE_AND_CLOCK = 0x73
 
     // Bulk-IN, reader to host (Table 6.2-1).
     const val RDR_TO_PC_DATA_BLOCK = 0x80
     const val RDR_TO_PC_SLOT_STATUS = 0x81
     const val RDR_TO_PC_PARAMETERS = 0x82
     const val RDR_TO_PC_ESCAPE = 0x83
+    const val RDR_TO_PC_DATA_RATE_AND_CLOCK = 0x84
 
     /** CCID Table 6.3-1, on the interrupt endpoint. */
     const val RDR_TO_PC_NOTIFY_SLOT_CHANGE = 0x50
@@ -50,6 +55,9 @@ internal object Ccid {
 
         /** The CCID performs PPS itself according to the active parameters. */
         const val AUTO_PPS = 0x0000_0080
+
+        /** The CCID can put the card into clock stop mode. */
+        const val CLOCK_STOP = 0x0000_0100
     }
 
     /**
@@ -71,6 +79,29 @@ internal object Ccid {
                 else -> CHARACTER
             }
         }
+    }
+
+    /** `dwMechanical` bits, Table 5.1-1: the motorised functions a reader has. */
+    object Mechanical {
+        const val ACCEPT = 0x0000_0001
+        const val EJECT = 0x0000_0002
+        const val CAPTURE = 0x0000_0004
+        const val LOCK_UNLOCK = 0x0000_0008
+    }
+
+    /** `bClockCommand` on an IccClock message (§6.1.9). */
+    object Clock {
+        const val RESTART = 0x00
+        const val STOP = 0x01
+    }
+
+    /** `bmChanges` on a T0APDU message (§6.1.10). */
+    object T0Apdu {
+        const val GET_RESPONSE_CLASS = 0x01
+        const val ENVELOPE_CLASS = 0x02
+
+        /** §6.1.10: this value makes the reader echo the APDU's own class byte. */
+        const val ECHO_CLASS = 0xFF
     }
 
     /** `bChainParameter` on a data block, extended-APDU level only (§6.2.1). */
