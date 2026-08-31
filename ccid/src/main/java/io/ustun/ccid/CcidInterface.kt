@@ -59,6 +59,13 @@ internal object CcidInterface {
             if (bulkIn == null || bulkOut == null) continue
 
             val caps = capabilities(connection, iface.id)
+            if (interruptIn != null && interruptIn.maxPacketSize < 1 + (caps.slotCount + 3) / 4) {
+                Log.w(
+                    "ccid",
+                    "interrupt endpoint maxPacketSize=${interruptIn.maxPacketSize} too small for ${caps.slotCount} slots; " +
+                        "needs ${1 + (caps.slotCount + 3) / 4}",
+                )
+            }
             return Found(
                 iface, bulkIn, bulkOut, interruptIn,
                 caps.level, caps.features, caps.mechanical,
