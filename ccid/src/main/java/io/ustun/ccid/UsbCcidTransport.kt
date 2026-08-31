@@ -211,13 +211,16 @@ class UsbCcidTransport internal constructor(
         return when (buffer[0].toInt() and 0xFF) {
             // §6.3.1: two bits per slot, the lower saying a card is present and
             // the upper that it changed. Only presence is surfaced.
-            Ccid.RDR_TO_PC_NOTIFY_SLOT_CHANGE -> SlotEvent.Changed(
-                BooleanArray(slotCount) { i ->
-                    val byteIndex = 1 + (i / 4)
-                    if (byteIndex >= n) false
-                    else (buffer[byteIndex].toInt() ushr ((i % 4) * 2)) and 0x01 != 0
-                }
-            )
+            Ccid.RDR_TO_PC_NOTIFY_SLOT_CHANGE -> {
+                val required = 1 + (slotCount + 3) / 4
+                if (n < required) return null
+                SlotEvent.Changed(
+                    BooleanArray(slotCount) { i ->
+                        val byteIndex = 1 + (i / 4)
+                        (buffer[byteIndex].toInt() ushr ((i % 4) * 2)) and 0x01 != 0
+                    }
+                )
+            }
 
             // §6.3.2: bSlot, bSeq, then bHardwareErrorCode. Dropping this reads
             // an overcurrent as though nothing had happened.
@@ -1026,8 +1029,9 @@ class UsbCcidTransport internal constructor(
             if (more <= 0) {
                 throw failed("Response was truncated", CcidException.Reason.COMMUNICATION)
             }
-            packet.copyInto(body, have, 0, minOf(more, total - have))
-            have += more
+            val copied = minOf(more, total - have)
+            packet.copyInto(body, have, 0, copied)
+            have += copied
         }
 
         return Ccid.parseHeader(body, total)
