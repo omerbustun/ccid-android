@@ -91,7 +91,10 @@ internal object CcidInterface {
      */
     private fun capabilities(connection: UsbDeviceConnection, interfaceId: Int): Capabilities {
         val fallback = Capabilities(Ccid.ExchangeLevel.SHORT_APDU, 0, 0, 0, 0, 0, 1)
-        val raw = connection.rawDescriptors ?: return fallback
+        val raw = connection.rawDescriptors ?: run {
+            Log.w("ccid", "no raw descriptors for interface $interfaceId; using fallback $fallback")
+            return fallback
+        }
         var i = 0
         var inTarget = false
         while (i + 1 < raw.size) {
@@ -113,6 +116,9 @@ internal object CcidInterface {
                 val maxLen = if (length >= 48 && i + 47 < raw.size) Ccid.le32(raw, i + 44) else 0
                 // Table 5.1-1: bMaxSlotIndex at offset 4; slots are one more.
                 val slots = (raw[i + 4].toInt() and 0xFF) + 1
+                if (Integer.bitCount(features and 0x0007_0000) > 1) {
+                    Log.w("ccid", "descriptor sets multiple exchange levels: dwFeatures=0x${"%08x".format(features)}")
+                }
                 Log.d(
                     "ccid",
                     "descriptor dwFeatures=0x${"%08x".format(features)} " +
@@ -125,6 +131,7 @@ internal object CcidInterface {
             }
             i += length
         }
+        Log.w("ccid", "no CCID functional descriptor (0x21) for interface $interfaceId; using fallback $fallback")
         return fallback
     }
 }
