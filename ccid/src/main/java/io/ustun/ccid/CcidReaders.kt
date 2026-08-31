@@ -17,6 +17,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Reader discovery and access.
@@ -65,49 +66,51 @@ class CcidReaders(private val context: Context) {
 
     /**
      * Request access, suspending until the user answers. Returns false if they
-     * decline.
+     * decline or the dialog times out.
      *
      * The grant is broadcast before the device accepts transfers; [open] waits
      * for the reader to respond before returning.
      */
     suspend fun requestPermission(device: UsbDevice): Boolean {
         if (usb.hasPermission(device)) return true
-        return suspendCancellableCoroutine { cont ->
-            val receiver = object : BroadcastReceiver() {
-                override fun onReceive(context: Context?, intent: Intent?) {
-                    if (intent?.action != ACTION_PERMISSION) return
-                    // Another reader's answer, from a request running alongside.
-                    if (answeredDevice(intent)?.deviceName != device.deviceName) return
-                    runCatching { context?.unregisterReceiver(this) }
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    if (cont.isActive) cont.resume(granted)
+        return withTimeoutOrNull(PERMISSION_TIMEOUT_MS) {
+            suspendCancellableCoroutine { cont ->
+                val receiver = object : BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        if (intent?.action != ACTION_PERMISSION) return
+                        // Another reader's answer, from a request running alongside.
+                        if (answeredDevice(intent)?.deviceName != device.deviceName) return
+                        runCatching { context?.unregisterReceiver(this) }
+                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                        if (cont.isActive) cont.resume(granted)
+                    }
                 }
-            }
-            val filter = IntentFilter(ACTION_PERMISSION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                context.registerReceiver(receiver, filter)
-            }
-            cont.invokeOnCancellation { runCatching { context.unregisterReceiver(receiver) } }
+                val filter = IntentFilter(ACTION_PERMISSION)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    @Suppress("UnspecifiedRegisterReceiverFlag")
+                    context.registerReceiver(receiver, filter)
+                }
+                cont.invokeOnCancellation { runCatching { context.unregisterReceiver(receiver) } }
 
-            // MUTABLE is required: the system writes the device and the grant
-            // into this intent before broadcasting it back.
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-            // One PendingIntent per device: a shared one would have its extras
-            // overwritten by a request for another reader.
-            usb.requestPermission(
-                device,
-                PendingIntent.getBroadcast(
-                    context,
-                    device.deviceName.hashCode(),
-                    Intent(ACTION_PERMISSION).setPackage(context.packageName),
-                    flags,
-                ),
-            )
-        }
+                // MUTABLE is required: the system writes the device and the grant
+                // into this intent before broadcasting it back.
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+                // One PendingIntent per device: a shared one would have its extras
+                // overwritten by a request for another reader.
+                usb.requestPermission(
+                    device,
+                    PendingIntent.getBroadcast(
+                        context,
+                        device.deviceId,
+                        Intent(ACTION_PERMISSION).setPackage(context.packageName),
+                        flags,
+                    ),
+                )
+            }
+        } ?: false
     }
 
     private fun answeredDevice(intent: Intent): UsbDevice? =
@@ -182,6 +185,9 @@ class CcidReaders(private val context: Context) {
     private companion object {
         /** Package-scoped so only this application's receiver is woken. */
         const val ACTION_PERMISSION = "io.ustun.ccid.USB_PERMISSION"
+
+        /** How long to wait for the permission dialog before giving up. */
+        const val PERMISSION_TIMEOUT_MS = 60_000L
     }
 }
 
